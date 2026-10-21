@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SongBrowser.h"
+#include "MinaCalcAdapter.h"
 
 #include <SDL.h>
 #include <imgui.h>
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <optional>
 
 enum class AppState {
     Menu,
@@ -50,6 +52,7 @@ public:
     void clearStartGameFlag() { shouldStartGame_ = false; }
 
     GameConfig gameConfig() const { return gameConfig_; }
+    void updatePlayConfig(const GameConfig& config) { gameConfig_.scrollModMode = config.scrollModMode; gameConfig_.scrollSpeed = config.scrollSpeed; gameConfig_.downscroll = config.downscroll; gameConfig_.rate = config.rate; }
 
     void setLastError(const std::string& error) { lastError_ = error; }
 
@@ -65,6 +68,12 @@ private:
     char filterBuffer_[128] = {};
     std::string lastError_;
     bool showDemoWindow_ = false;
+    std::filesystem::path skillCachePath_;
+    size_t skillCacheChart_ = static_cast<size_t>(-1);
+    float skillCacheRate_ = -1.0f;
+    std::optional<std::array<float, 8>> skillCacheValues_;
+    std::filesystem::path preferencesPath_;
+    bool preferencesLoaded_ = false;
 
     void renderMenu();
     void renderSongList();
@@ -74,4 +83,7 @@ private:
     void startGame(const SongEntry& song, size_t chartIndex);
 
     std::filesystem::path getDefaultSongsFolder();
+    std::filesystem::path getPreferencesPath() const;
+    void loadPreferences();
+    void savePreferences();
 };

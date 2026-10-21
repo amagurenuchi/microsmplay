@@ -75,7 +75,7 @@ bool SongBrowser::parseSongInfo(SongEntry& entry) {
             desc += " " + std::to_string(chart.meter);
         }
 
-        if (const auto msd = calculateChartMsd(*parsed, chart)) {
+        if (const auto msd = calculateChartMsd(*parsed, chart, 1.0f)) {
             char buffer[32] = {};
             std::snprintf(buffer, sizeof(buffer), " [MSD %.2f]", *msd);
             desc += buffer;

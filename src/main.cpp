@@ -137,7 +137,7 @@ bool runGameSession(SDL_Window* window, SDL_Renderer* sdlRenderer, Renderer& ren
     while (running) {
         const double audioSecondsAtFrameStart = audio.currentSeconds();
         const double chartTimeAtFrameStart = chartTime +
-            (audioSecondsAtFrameStart - previousAudioSeconds) * liveConfig.rate;
+            (audioSecondsAtFrameStart - previousAudioSeconds) * appliedRate;
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             menu.handleEvent(ev);
@@ -185,6 +185,12 @@ bool runGameSession(SDL_Window* window, SDL_Renderer* sdlRenderer, Renderer& ren
             }
         }
 
+        const double audioSeconds = audio.currentSeconds();
+        // Time elapsed before this frame's rate change belongs to the old
+        // rate; applying the new rate here caused a small chart-time jump.
+        chartTime += (audioSeconds - previousAudioSeconds) * appliedRate;
+        previousAudioSeconds = audioSeconds;
+
         if (liveConfig.rate != appliedRate) {
             if (!audio.setPlaybackRate(liveConfig.rate, audioError)) {
                 menu.setLastError(audioError);
@@ -193,10 +199,6 @@ bool runGameSession(SDL_Window* window, SDL_Renderer* sdlRenderer, Renderer& ren
                 appliedRate = liveConfig.rate;
             }
         }
-
-        const double audioSeconds = audio.currentSeconds();
-        chartTime += (audioSeconds - previousAudioSeconds) * liveConfig.rate;
-        previousAudioSeconds = audioSeconds;
         const double nowSec = chartTime;
         game.update(nowSec);
 
@@ -209,7 +211,7 @@ bool runGameSession(SDL_Window* window, SDL_Renderer* sdlRenderer, Renderer& ren
 
         renderer.draw(game, session.timing, chartTime, session.chart.columnCount, width, height,
                       kGlobalOffsetMs, liveConfig.scrollModMode, liveConfig.scrollSpeed,
-                      liveConfig.rate, liveConfig.downscroll, durationSeconds);
+                      liveConfig.rate, liveConfig.downscroll, durationSeconds, session.song, session.chart);
 
         bool togglePlayback = false;
         bool requestExit = false;
@@ -233,6 +235,7 @@ bool runGameSession(SDL_Window* window, SDL_Renderer* sdlRenderer, Renderer& ren
     }
 
     audio.stop();
+    menu.updatePlayConfig(liveConfig);
     return true;
 }
 }

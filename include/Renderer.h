@@ -2,6 +2,7 @@
 
 #include "GameState.h"
 #include "MenuSystem.h"
+#include "MinaCalcAdapter.h"
 #include "TimingData.h"
 
 #include <SDL.h>
@@ -24,7 +25,9 @@ public:
               float scrollSpeed,
               float musicRate,
               bool downscroll,
-              double durationSeconds);
+              double durationSeconds,
+              const ParsedSong& song,
+              const ParsedChart& chart);
 
 private:
     SDL_Renderer* renderer_ = nullptr;

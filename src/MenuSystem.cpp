@@ -12,6 +12,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -86,13 +88,16 @@ bool MenuSystem::initialize(SDL_Window* window, SDL_Renderer* renderer) {
         return false;
     }
 
+    preferencesPath_ = getPreferencesPath();
     currentFolder_ = getDefaultSongsFolder();
+    loadPreferences();
     std::strncpy(folderPathBuffer_, currentFolder_.string().c_str(), sizeof(folderPathBuffer_) - 1);
 
     return true;
 }
 
 void MenuSystem::shutdown() {
+    savePreferences();
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
@@ -194,6 +199,7 @@ void MenuSystem::renderFolderSelector() {
             currentFolder_ = newPath;
             browser_.scanFolder(currentFolder_);
             lastError_.clear();
+            savePreferences();
         } else {
             lastError_ = "Invalid folder path";
         }
@@ -203,6 +209,7 @@ void MenuSystem::renderFolderSelector() {
     ImGui::SameLine();
     if (ImGui::Button("Browse...", ImVec2(90, 0))) {
         openFolderPicker(currentFolder_, browser_, lastError_, folderPathBuffer_, sizeof(folderPathBuffer_));
+        if (lastError_.empty()) savePreferences();
     }
 
     if (ImGui::IsKeyPressed(ImGuiKey_F5)) {
@@ -317,23 +324,29 @@ void MenuSystem::renderSongDetails() {
 
                 ImGui::Spacing();
                 ImGui::Text("Skillsets");
-                ChartParser skillParser;
-                std::string skillError;
-                if (auto parsedSkill = skillParser.parseFile(song->chartPath, skillError)) {
-                    const size_t selected = browser_.selectedChartIndex();
-                    if (selected < song->chartIndices.size() && song->chartIndices[selected] < parsedSkill->charts.size()) {
-                    if (auto values = calculateChartSkillsets(*parsedSkill, parsedSkill->charts[song->chartIndices[selected]])) {
+                const size_t selected = browser_.selectedChartIndex();
+                if (skillCachePath_ != song->chartPath || skillCacheChart_ != selected || skillCacheRate_ != gameConfig_.rate) {
+                    skillCachePath_ = song->chartPath;
+                    skillCacheChart_ = selected;
+                    skillCacheRate_ = gameConfig_.rate;
+                    skillCacheValues_.reset();
+                    ChartParser skillParser;
+                    std::string skillError;
+                    if (auto parsedSkill = skillParser.parseFile(song->chartPath, skillError)) {
+                        if (selected < song->chartIndices.size() && song->chartIndices[selected] < parsedSkill->charts.size()) {
+                            skillCacheValues_ = calculateChartSkillsets(*parsedSkill, parsedSkill->charts[song->chartIndices[selected]], gameConfig_.rate);
+                        }
+                    }
+                }
+                if (skillCacheValues_) {
+                    const auto& values = skillCacheValues_;
                         static const char* names[] = {"Overall", "Stream", "Jumpstream", "Handstream", "Stamina", "JackSpeed", "Chordjack", "Technical"};
                         for (size_t skill = 0; skill < values->size(); ++skill) {
                             ImGui::Text("%s: %.2f", names[skill], (*values)[skill]);
                             if ((skill & 1u) == 0u && skill + 1 < values->size()) ImGui::SameLine(190.0f);
                         }
-                    } else {
-                        ImGui::TextDisabled("Skillsets unavailable for this chart");
-                    }
-                    } else {
-                        ImGui::TextDisabled("Skillsets unavailable for this chart");
-                    }
+                } else {
+                    ImGui::TextDisabled("Skillsets unavailable for this chart");
                 }
 
                 ImGui::Spacing();
@@ -470,6 +483,12 @@ void MenuSystem::renderPlayOptions(GameConfig& config, bool isPlaying) {
     if (isPlaying) {
         ImGui::TextDisabled("Changes apply live during play.");
     }
+
+    // Save the shared menu settings as soon as they are changed. This also
+    // covers changes made in the in-game overlay (where config is a copy).
+    if (!isPlaying) {
+        savePreferences();
+    }
 }
 
 void MenuSystem::renderPlayOverlay(GameConfig& config, bool isPaused, bool& togglePlayback, bool& requestExit) {
@@ -547,4 +566,70 @@ std::filesystem::path MenuSystem::getDefaultSongsFolder() {
     }
 #endif
     return std::filesystem::current_path();
+}
+
+std::filesystem::path MenuSystem::getPreferencesPath() const {
+#ifdef _WIN32
+    if (const char* appData = std::getenv("APPDATA"); appData && *appData) {
+        return std::filesystem::path(appData) / "MicroSMPlay" / "preferences.ini";
+    }
+#else
+    if (const char* configHome = std::getenv("XDG_CONFIG_HOME"); configHome && *configHome) {
+        return std::filesystem::path(configHome) / "microsmplay" / "preferences.ini";
+    }
+    if (const char* home = std::getenv("HOME"); home && *home) {
+        return std::filesystem::path(home) / ".config" / "microsmplay" / "preferences.ini";
+    }
+#endif
+    return std::filesystem::current_path() / "preferences.ini";
+}
+
+void MenuSystem::loadPreferences() {
+    preferencesLoaded_ = true;
+    std::ifstream input(preferencesPath_);
+    if (!input) return;
+
+    std::string line;
+    while (std::getline(input, line)) {
+        const size_t separator = line.find('=');
+        if (separator == std::string::npos) continue;
+        const std::string key = line.substr(0, separator);
+        const std::string value = line.substr(separator + 1);
+        try {
+            if (key == "songs_folder" && std::filesystem::is_directory(value)) {
+                currentFolder_ = value;
+            } else if (key == "scroll_mode") {
+                const int mode = std::stoi(value);
+                if (mode >= 0 && mode <= 2) gameConfig_.scrollModMode = static_cast<ScrollModMode>(mode);
+            } else if (key == "scroll_speed") {
+                gameConfig_.scrollSpeed = std::stof(value);
+            } else if (key == "downscroll") {
+                gameConfig_.downscroll = std::stoi(value) != 0;
+            } else if (key == "rate") {
+                gameConfig_.rate = std::stof(value);
+            }
+        } catch (const std::exception&) {
+            // Ignore malformed preference values and keep defaults.
+        }
+    }
+}
+
+void MenuSystem::savePreferences() {
+    if (!preferencesLoaded_ || preferencesPath_.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(preferencesPath_.parent_path(), ec);
+    const auto temporaryPath = preferencesPath_.string() + ".tmp";
+    std::ofstream output(temporaryPath, std::ios::trunc);
+    if (!output) return;
+    output << "songs_folder=" << currentFolder_.string() << '\n'
+           << "scroll_mode=" << static_cast<int>(gameConfig_.scrollModMode) << '\n'
+           << "scroll_speed=" << gameConfig_.scrollSpeed << '\n'
+           << "downscroll=" << (gameConfig_.downscroll ? 1 : 0) << '\n'
+           << "rate=" << gameConfig_.rate << '\n';
+    output.close();
+    std::filesystem::rename(temporaryPath, preferencesPath_, ec);
+    if (ec) {
+        std::filesystem::remove(preferencesPath_, ec);
+        std::filesystem::rename(temporaryPath, preferencesPath_, ec);
+    }
 }

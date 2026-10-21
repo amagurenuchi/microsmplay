@@ -6,6 +6,10 @@
 #include <array>
 #include <cctype>
 #include <unordered_map>
+#include <sstream>
+#include <iomanip>
+#include <optional>
+#include <numeric>
 
 namespace {
 using Glyph = std::array<const char*, 7>;
@@ -31,19 +35,29 @@ const std::unordered_map<char, Glyph> kFont = {
     {'E', {"11111", "10000", "10000", "11110", "10000", "10000", "11111"}},
     {'F', {"11111", "10000", "10000", "11110", "10000", "10000", "10000"}},
     {'G', {"01110", "10001", "10000", "10111", "10001", "10001", "01110"}},
+    {'H', {"10001", "10001", "10001", "11111", "10001", "10001", "10001"}},
     {'I', {"11111", "00100", "00100", "00100", "00100", "00100", "11111"}},
+    {'J', {"00111", "00010", "00010", "00010", "00010", "10010", "01100"}},
+    {'K', {"10001", "10010", "10100", "11000", "10100", "10010", "10001"}},
     {'L', {"10000", "10000", "10000", "10000", "10000", "10000", "11111"}},
     {'M', {"10001", "11011", "10101", "10101", "10001", "10001", "10001"}},
+    {'N', {"10001", "11001", "10101", "10101", "10011", "10001", "10001"}},
     {'O', {"01110", "10001", "10001", "10001", "10001", "10001", "01110"}},
     {'P', {"11110", "10001", "10001", "11110", "10000", "10000", "10000"}},
+    {'Q', {"01110", "10001", "10001", "10001", "10101", "10010", "01101"}},
     {'R', {"11110", "10001", "10001", "11110", "10100", "10010", "10001"}},
     {'S', {"01111", "10000", "10000", "01110", "00001", "00001", "11110"}},
     {'T', {"11111", "00100", "00100", "00100", "00100", "00100", "00100"}},
     {'U', {"10001", "10001", "10001", "10001", "10001", "10001", "01110"}},
     {'V', {"10001", "10001", "10001", "10001", "10001", "01010", "00100"}},
+    {'W', {"10001", "10001", "10001", "10101", "10101", "11011", "10001"}},
     {'X', {"10001", "01010", "00100", "00100", "00100", "01010", "10001"}},
+    {'Y', {"10001", "10001", "01010", "00100", "00100", "00100", "00100"}},
     {' ', {"00000", "00000", "00000", "00000", "00000", "00000", "00000"}},
     {':', {"00000", "00100", "00100", "00000", "00100", "00100", "00000"}},
+    {'.', {"00000", "00000", "00000", "00000", "00000", "00110", "00110"}},
+    {'-', {"00000", "00000", "00000", "11111", "00000", "00000", "00000"}},
+    {'/', {"00001", "00010", "00100", "01000", "10000", "00000", "00000"}},
 };
 
 SDL_Color judgmentColor(const std::string& j) {
@@ -69,6 +83,32 @@ SDL_Color noteColor(NoteType type) {
     case NoteType::AutoKeysound: return {120, 255, 255, 255};
     case NoteType::Invisible: return {90, 90, 110, 180};
     default: return {255, 255, 255, 255};
+    }
+}
+
+SDL_Color snapColor(double beat) {
+    // Chart beats are quarter-note beats.  Reduce the row's fractional beat
+    // to its simplest denominator, then map it to the usual SM snap colors.
+    constexpr int kResolution = 192;
+    const int ticks = static_cast<int>(std::llround(beat * kResolution));
+    int numerator = ((ticks % kResolution) + kResolution) % kResolution;
+    if (numerator == 0) {
+        return {255, 70, 70, 255}; // 4th
+    }
+    const int divisor = std::gcd(numerator, kResolution);
+    const int denominator = kResolution / divisor;
+    switch (denominator * 4) {
+    case 4:   return {255, 70, 70, 255};   // red
+    case 8:   return {70, 140, 255, 255};  // blue
+    case 12:  return {180, 90, 255, 255};  // purple
+    case 16:  return {255, 220, 50, 255};  // yellow
+    case 24:  return {255, 110, 190, 255}; // pink
+    case 32:  return {255, 145, 45, 255};  // orange
+    case 48:  return {60, 235, 235, 255};  // cyan
+    case 64:  return {150, 255, 60, 255};  // lime
+    case 96:  return {170, 170, 170, 255}; // grey
+    case 192: return {255, 255, 255, 255}; // white
+    default:  return {255, 255, 255, 255};
     }
 }
 
@@ -120,7 +160,9 @@ void Renderer::draw(const GameState& game,
                     float scrollSpeed,
                     float musicRate,
                     bool downscroll,
-                    double durationSeconds) {
+                    double durationSeconds,
+                    const ParsedSong& song,
+                    const ParsedChart& chart) {
     if (!renderer_) {
         return;
     }
@@ -132,7 +174,7 @@ void Renderer::draw(const GameState& game,
     const int laneGap = 4;
     const int laneWidth = (fieldWidth - laneGap * (columnCount - 1)) / std::max(1, columnCount);
     const int fieldX = (width - fieldWidth) / 2;
-    const int receptorY = downscroll ? static_cast<int>(height * 0.25f) : static_cast<int>(height * 0.75f);
+    const int receptorY = downscroll ? static_cast<int>(height * 0.10f) : static_cast<int>(height * 0.90f);
     const double fieldHeight = static_cast<double>(height);
 
     for (int c = 0; c < columnCount; ++c) {
@@ -148,15 +190,39 @@ void Renderer::draw(const GameState& game,
         SDL_RenderFillRect(renderer_, &receptor);
     }
 
+    // Draw hold/roll bodies first so their heads and tails remain crisp.
+    for (const auto& note : game.notes()) {
+        if (note.type != NoteType::HoldHead && note.type != NoteType::RollHead) continue;
+        const auto tail = std::find_if(game.notes().begin(), game.notes().end(), [&](const Note& candidate) {
+            return candidate.type == NoteType::HoldTail && candidate.column == note.column && candidate.beat > note.beat;
+        });
+        if (tail == game.notes().end()) continue;
+        const double headSeconds = timing.beatToSeconds(note.beat);
+        const double tailSeconds = timing.beatToSeconds(tail->beat);
+        const double headSpeed = computeScrollPixelsPerSecond(timing, note.beat, scrollModMode, scrollSpeed, fieldHeight);
+        const double tailSpeed = computeScrollPixelsPerSecond(timing, tail->beat, scrollModMode, scrollSpeed, fieldHeight);
+        const int headY = receptorY + static_cast<int>((downscroll ? 1.0 : -1.0) * (headSeconds - currentAudioSeconds) * headSpeed);
+        const int tailY = receptorY + static_cast<int>((downscroll ? 1.0 : -1.0) * (tailSeconds - currentAudioSeconds) * tailSpeed);
+        const int x = fieldX + note.column * (laneWidth + laneGap);
+        SDL_Color bodyColor = note.type == NoteType::RollHead ? SDL_Color{115, 75, 185, 255} : SDL_Color{70, 175, 105, 255};
+        SDL_SetRenderDrawColor(renderer_, bodyColor.r, bodyColor.g, bodyColor.b, bodyColor.a);
+        SDL_Rect body{x + laneWidth / 4, std::min(headY, tailY), std::max(2, laneWidth / 2), std::abs(tailY - headY)};
+        SDL_RenderFillRect(renderer_, &body);
+    }
+
     for (const auto& note : game.notes()) {
         if (note.judged) {
             continue;
         }
 
-        // currentAudioSeconds is the continuous chart clock. Rate changes
-        // affect how quickly this clock advances, not its existing position.
         const double noteSeconds = timing.beatToSeconds(note.beat);
-        const double deltaSeconds = noteSeconds - currentAudioSeconds;
+        const double chartDeltaSeconds = noteSeconds - currentAudioSeconds;
+        // CMOD is fixed pixels-per-second. Divide the remaining chart time by
+        // rate so rate changes condense or expand note spacing without moving
+        // the chart's current position at the receptor.
+        const double deltaSeconds = scrollModMode == ScrollModMode::CMod && musicRate > 0.0f
+            ? chartDeltaSeconds / musicRate
+            : chartDeltaSeconds;
         const double pixelsPerSecond = computeScrollPixelsPerSecond(timing, note.beat, scrollModMode, scrollSpeed, fieldHeight);
         const int y = receptorY + static_cast<int>((downscroll ? 1.0 : -1.0) * deltaSeconds * pixelsPerSecond);
         if (y < -20 || y > height + 20) {
@@ -165,6 +231,9 @@ void Renderer::draw(const GameState& game,
 
         const int x = fieldX + note.column * (laneWidth + laneGap);
         SDL_Color color = noteColor(note.type);
+        if (note.type == NoteType::Tap || note.type == NoteType::HoldHead || note.type == NoteType::RollHead) {
+            color = snapColor(note.beat);
+        }
         SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
 
         switch (note.type) {
@@ -297,9 +366,41 @@ void Renderer::draw(const GameState& game,
         SDL_RenderDrawLine(renderer_, x, graphY, x, graphY + graphH);
     }
     drawText("FULL-SONG DIFFICULTY", graphX, graphY - 16, 1, {180, 200, 220, 255});
-    drawText("CURRENT INTERVAL NPS: " + std::to_string(static_cast<int>(intervalNps * 10.0) / 10.0), graphX, graphY + graphH + 8, 1, {255, 210, 130, 255});
-    drawText("TOTAL LEFT NOTES: " + std::to_string(left) + "  RIGHT: " + std::to_string(right), graphX, graphY + graphH + 20, 1, {150, 220, 255, 255});
-    drawText("PEAK NPS: " + std::to_string(static_cast<int>(peakNps * 10.0) / 10.0), graphX, graphY + graphH + 32, 1, {140, 255, 180, 255});
+    // Mina MSD is intentionally cached: recalculating it on every render frame
+    // is expensive and was the primary source of gameplay hitching.
+    static const ParsedChart* cachedChart = nullptr;
+    static int cachedInterval = -1;
+    static float cachedRate = -1.0f;
+    static std::optional<std::array<float, 8>> cachedIntervalSkills;
+    static std::optional<std::array<float, 8>> cachedAccumulatedSkills;
+    const int intervalBucket = static_cast<int>(std::floor((currentAudioSeconds + 0.5) * 2.0));
+    if (cachedChart != &chart || cachedInterval != intervalBucket || cachedRate != musicRate) {
+        cachedChart = &chart;
+        cachedInterval = intervalBucket;
+        cachedRate = musicRate;
+        const double center = intervalBucket * 0.5;
+        cachedIntervalSkills = calculateIntervalSkillsets(song, chart, center - 0.5, center + 0.5, musicRate);
+        cachedAccumulatedSkills = calculateIntervalSkillsets(song, chart, 0.0, center + 0.5, musicRate);
+    }
+    const auto& intervalSkills = cachedIntervalSkills;
+    const auto& accumulatedSkills = cachedAccumulatedSkills;
+    const char* names[] = {"OVERALL", "STREAM", "JUMPSTREAM", "HANDSTREAM", "STAMINA", "JACKSPEED", "CHORDJACK", "TECHNICAL"};
+    auto value = [](float v) { std::ostringstream out; out << std::fixed << std::setprecision(2) << v; return out.str(); };
+    const int tableY = graphY + graphH + 8;
+    drawText("MSD SKILLSET", graphX, tableY, 1, {255, 220, 150, 255});
+    drawText("CURRENT", graphX + 72, tableY, 1, {255, 220, 150, 255});
+    drawText("ACCUMULATED", graphX + 120, tableY, 1, {255, 220, 150, 255});
+    for (size_t i = 0; i < 8; ++i) {
+        std::ostringstream rowStream;
+        rowStream << std::left << std::setw(12) << names[i]
+                  << std::right << std::setw(8) << value(intervalSkills ? (*intervalSkills)[i] : 0.0f)
+                  << std::setw(14) << value(accumulatedSkills ? (*accumulatedSkills)[i] : 0.0f);
+        std::string row = rowStream.str();
+        drawText(row, graphX, tableY + 12 + static_cast<int>(i) * 9, 1, {255, 190, 140, 255});
+    }
+    const int statsY = graphY + graphH + 94;
+    drawText("TOTAL LEFT NOTES: " + std::to_string(left) + "  RIGHT: " + std::to_string(right), graphX, statsY, 1, {150, 220, 255, 255});
+    drawText("CURRENT NPS: " + value(static_cast<float>(intervalNps)) + "  PEAK NPS: " + value(static_cast<float>(peakNps)), graphX, statsY + 12, 1, {140, 255, 180, 255});
 
     const int timelineY = height - 28;
     SDL_SetRenderDrawColor(renderer_, 38, 45, 62, 255);

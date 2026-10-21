@@ -76,13 +76,13 @@ std::vector<NoteInfo> buildNoteInfo(const ParsedSong& song, const ParsedChart& c
 }
 }
 
-std::optional<float> calculateChartMsd(const ParsedSong& song, const ParsedChart& chart) {
-    const auto values = calculateChartSkillsets(song, chart);
+std::optional<float> calculateChartMsd(const ParsedSong& song, const ParsedChart& chart, float musicRate) {
+    const auto values = calculateChartSkillsets(song, chart, musicRate);
     if (!values) return std::nullopt;
     return (*values)[Skill_Overall];
 }
 
-std::optional<std::array<float, 8>> calculateChartSkillsets(const ParsedSong& song, const ParsedChart& chart) {
+std::optional<std::array<float, 8>> calculateChartSkillsets(const ParsedSong& song, const ParsedChart& chart, float musicRate) {
     if (chart.columnCount != 4) {
         return std::nullopt;
     }
@@ -93,7 +93,7 @@ std::optional<std::array<float, 8>> calculateChartSkillsets(const ParsedSong& so
     }
 
     static thread_local Calc calc;
-    const auto skillsets = MinaSDCalc(noteInfo, 1.0f, 0.93f, static_cast<unsigned>(chart.columnCount), &calc);
+    const auto skillsets = MinaSDCalc(noteInfo, musicRate, 0.93f, static_cast<unsigned>(chart.columnCount), &calc);
     if (skillsets.size() <= static_cast<size_t>(Skill_Overall)) {
         return std::nullopt;
     }
@@ -104,6 +104,23 @@ std::optional<std::array<float, 8>> calculateChartSkillsets(const ParsedSong& so
         if (!std::isfinite(result[i])) {
             return std::nullopt;
         }
+    }
+    return result;
+}
+
+std::optional<std::array<float, 8>> calculateIntervalSkillsets(const ParsedSong& song, const ParsedChart& chart, double startSeconds, double endSeconds, float musicRate) {
+    if (chart.columnCount != 4) return std::nullopt;
+    auto all = buildNoteInfo(song, chart);
+    std::vector<NoteInfo> interval;
+    for (const auto& row : all) if (row.rowTime >= startSeconds && row.rowTime < endSeconds) interval.push_back(row);
+    if (interval.size() <= 1) return std::nullopt;
+    static thread_local Calc calc;
+    const auto values = MinaSDCalc(interval, musicRate, 0.93f, static_cast<unsigned>(chart.columnCount), &calc);
+    if (values.size() <= static_cast<size_t>(Skill_Overall)) return std::nullopt;
+    std::array<float, 8> result{};
+    for (size_t i = 0; i < result.size(); ++i) {
+        result[i] = values[i];
+        if (!std::isfinite(result[i])) return std::nullopt;
     }
     return result;
 }
