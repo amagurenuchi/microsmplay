@@ -17,11 +17,13 @@ public:
     void stop();
     void pause();
     bool setPlaybackRate(float rate, std::string& error);
+    bool seekSeconds(double seconds);
 
     double currentSeconds() const;
     bool isLoaded() const;
     bool isPlaying() const;
     float playbackRate() const;
+    double durationSeconds() const;
 
 private:
     static void dataCallback(ma_device* device, void* output, const void* input, ma_uint32 frameCount);
@@ -36,4 +38,5 @@ private:
     std::atomic<uint32_t> sampleRate_{48000};
     std::atomic<float> playbackRate_{1.0f};
     ma_uint32 sourceSampleRate_ = 0;
+    uint64_t totalFrames_ = 0;
 };

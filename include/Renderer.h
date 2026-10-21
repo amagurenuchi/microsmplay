@@ -22,7 +22,9 @@ public:
               double globalOffsetMs,
               ScrollModMode scrollModMode,
               float scrollSpeed,
-              bool downscroll);
+              float musicRate,
+              bool downscroll,
+              double durationSeconds);
 
 private:
     SDL_Renderer* renderer_ = nullptr;

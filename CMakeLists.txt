@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
 project(MicroSMPlay LANGUAGES CXX)
 
+# Keep local development builds on the debuggable configuration by default.
+if (CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_CONFIGURATION_TYPES Debug Release CACHE STRING "Available build configurations" FORCE)
+else()
+    set(CMAKE_DEFAULT_BUILD_TYPE Debug CACHE STRING "Default build configuration")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

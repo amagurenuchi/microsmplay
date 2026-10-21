@@ -118,7 +118,9 @@ void Renderer::draw(const GameState& game,
                     double globalOffsetMs,
                     ScrollModMode scrollModMode,
                     float scrollSpeed,
-                    bool downscroll) {
+                    float musicRate,
+                    bool downscroll,
+                    double durationSeconds) {
     if (!renderer_) {
         return;
     }
@@ -151,6 +153,8 @@ void Renderer::draw(const GameState& game,
             continue;
         }
 
+        // currentAudioSeconds is the continuous chart clock. Rate changes
+        // affect how quickly this clock advances, not its existing position.
         const double noteSeconds = timing.beatToSeconds(note.beat);
         const double deltaSeconds = noteSeconds - currentAudioSeconds;
         const double pixelsPerSecond = computeScrollPixelsPerSecond(timing, note.beat, scrollModMode, scrollSpeed, fieldHeight);
@@ -241,15 +245,72 @@ void Renderer::draw(const GameState& game,
     drawText("COMBO:", 20, 20, 3, {255, 255, 255, 255});
     drawText(std::to_string(game.combo()), 20, 48, 4, {120, 255, 220, 255});
 
-    const auto& tally = game.tally();
-    drawText("M:" + std::to_string(tally.marvelous) + " P:" + std::to_string(tally.perfect), 20, height - 90, 2, {210, 210, 210, 255});
-    drawText("G:" + std::to_string(tally.great) + " GD:" + std::to_string(tally.good), 20, height - 66, 2, {210, 210, 210, 255});
-    drawText("B:" + std::to_string(tally.bad) + " MS:" + std::to_string(tally.miss), 20, height - 42, 2, {210, 210, 210, 255});
+    // Full-song vertical distribution: bars show local difficulty, the line shows NPS.
+    const int graphX = 20, graphY = 105, graphW = 250, graphH = 110;
+    SDL_SetRenderDrawColor(renderer_, 28, 34, 48, 255);
+    SDL_Rect graphBg{graphX, graphY, graphW, graphH};
+    SDL_RenderFillRect(renderer_, &graphBg);
+    constexpr int kBins = 50;
+    std::array<double, kBins> binNps{};
+    std::array<double, kBins> binDifficulty{};
+    double peakNps = 0.0;
+    double intervalNps = 0.0;
+    int left = 0, right = 0;
+    for (const auto& n : game.notes()) {
+        const double t = timing.beatToSeconds(n.beat);
+        if (n.type != NoteType::HoldTail) {
+            if (n.column < columnCount / 2) ++left; else ++right;
+        }
+        if (t >= currentAudioSeconds - 0.5 && t < currentAudioSeconds + 0.5 && n.type != NoteType::HoldTail) {
+            intervalNps += 1.0;
+        }
+        if (durationSeconds > 0.0 && t >= 0.0) {
+            const int b = std::clamp(static_cast<int>(t / durationSeconds * kBins), 0, kBins - 1);
+            binNps[static_cast<size_t>(b)] += 1.0 / (durationSeconds / kBins);
+        }
+    }
+    for (int b = 0; b < kBins; ++b) {
+        peakNps = std::max(peakNps, binNps[static_cast<size_t>(b)]);
+        binDifficulty[static_cast<size_t>(b)] = binNps[static_cast<size_t>(b)];
+    }
+    const double maxValue = std::max(1.0, peakNps);
+    const int playBin = durationSeconds > 0.0 ? std::clamp(static_cast<int>(currentAudioSeconds / durationSeconds * kBins), 0, kBins - 1) : -1;
+    SDL_SetRenderDrawColor(renderer_, 70, 150, 215, 255);
+    for (int b = 0; b < kBins; ++b) {
+        const int x = graphX + b * graphW / kBins;
+        const int w = std::max(1, graphW / kBins - 1);
+        const int bar = static_cast<int>(binDifficulty[static_cast<size_t>(b)] / maxValue * (graphH - 2));
+        SDL_Rect r{x, graphY + graphH - bar - 1, w, bar};
+        SDL_RenderFillRect(renderer_, &r);
+    }
+    SDL_SetRenderDrawColor(renderer_, 120, 255, 170, 255);
+    for (int b = 1; b < kBins; ++b) {
+        const int x0 = graphX + (b - 1) * graphW / kBins;
+        const int x1 = graphX + b * graphW / kBins;
+        const int y0 = graphY + graphH - 1 - static_cast<int>(binNps[static_cast<size_t>(b - 1)] / maxValue * (graphH - 2));
+        const int y1 = graphY + graphH - 1 - static_cast<int>(binNps[static_cast<size_t>(b)] / maxValue * (graphH - 2));
+        SDL_RenderDrawLine(renderer_, x0, y0, x1, y1);
+    }
+    if (playBin >= 0) {
+        SDL_SetRenderDrawColor(renderer_, 255, 225, 120, 255);
+        const int x = graphX + playBin * graphW / kBins;
+        SDL_RenderDrawLine(renderer_, x, graphY, x, graphY + graphH);
+    }
+    drawText("FULL-SONG DIFFICULTY", graphX, graphY - 16, 1, {180, 200, 220, 255});
+    drawText("CURRENT INTERVAL NPS: " + std::to_string(static_cast<int>(intervalNps * 10.0) / 10.0), graphX, graphY + graphH + 8, 1, {255, 210, 130, 255});
+    drawText("TOTAL LEFT NOTES: " + std::to_string(left) + "  RIGHT: " + std::to_string(right), graphX, graphY + graphH + 20, 1, {150, 220, 255, 255});
+    drawText("PEAK NPS: " + std::to_string(static_cast<int>(peakNps * 10.0) / 10.0), graphX, graphY + graphH + 32, 1, {140, 255, 180, 255});
 
-    std::string judgment = game.lastJudgmentText();
-    if (!judgment.empty() && game.lastJudgmentAgeSeconds() < 0.6) {
-        SDL_Color jc = judgmentColor(judgment);
-        drawText(judgment, width / 2 - static_cast<int>(judgment.size()) * 9, height / 2, 3, jc);
+    const int timelineY = height - 28;
+    SDL_SetRenderDrawColor(renderer_, 38, 45, 62, 255);
+    SDL_Rect timeline{20, timelineY, std::max(1, width - 40), 8};
+    SDL_RenderFillRect(renderer_, &timeline);
+    if (durationSeconds > 0.0) {
+        const int playhead = timeline.x + static_cast<int>(std::clamp(currentAudioSeconds / durationSeconds, 0.0, 1.0) * timeline.w);
+        SDL_SetRenderDrawColor(renderer_, 100, 230, 210, 255);
+        SDL_Rect progress{timeline.x, timelineY, std::max(1, playhead - timeline.x), 8};
+        SDL_RenderFillRect(renderer_, &progress);
+        SDL_RenderDrawLine(renderer_, playhead, timelineY - 4, playhead, timelineY + 12);
     }
 
     if (game.isAutoplay()) {

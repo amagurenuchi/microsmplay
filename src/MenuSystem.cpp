@@ -1,6 +1,7 @@
 #include "MenuSystem.h"
 
 #include "ChartParser.h"
+#include "MinaCalcAdapter.h"
 
 #include <imgui_impl_sdl2.h>
 #include <imgui_impl_sdlrenderer2.h>
@@ -315,6 +316,27 @@ void MenuSystem::renderSongDetails() {
                 renderPlayOptions(gameConfig_, false);
 
                 ImGui::Spacing();
+                ImGui::Text("Skillsets");
+                ChartParser skillParser;
+                std::string skillError;
+                if (auto parsedSkill = skillParser.parseFile(song->chartPath, skillError)) {
+                    const size_t selected = browser_.selectedChartIndex();
+                    if (selected < song->chartIndices.size() && song->chartIndices[selected] < parsedSkill->charts.size()) {
+                    if (auto values = calculateChartSkillsets(*parsedSkill, parsedSkill->charts[song->chartIndices[selected]])) {
+                        static const char* names[] = {"Overall", "Stream", "Jumpstream", "Handstream", "Stamina", "JackSpeed", "Chordjack", "Technical"};
+                        for (size_t skill = 0; skill < values->size(); ++skill) {
+                            ImGui::Text("%s: %.2f", names[skill], (*values)[skill]);
+                            if ((skill & 1u) == 0u && skill + 1 < values->size()) ImGui::SameLine(190.0f);
+                        }
+                    } else {
+                        ImGui::TextDisabled("Skillsets unavailable for this chart");
+                    }
+                    } else {
+                        ImGui::TextDisabled("Skillsets unavailable for this chart");
+                    }
+                }
+
+                ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::Spacing();
 
@@ -322,11 +344,6 @@ void MenuSystem::renderSongDetails() {
                     startGame(*song, browser_.selectedChartIndex());
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Play (Auto-select)", ImVec2(140, 40))) {
-                    if (!song->chartIndices.empty()) {
-                        startGame(*song, browser_.selectedChartIndex());
-                    }
-                }
             }
         }
     }
@@ -338,11 +355,12 @@ void MenuSystem::renderPlayOptions(GameConfig& config, bool isPlaying) {
     const float fullWidth = ImGui::GetContentRegionAvail().x;
     const float buttonWidth = 36.0f;
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    const float sliderWidth = fullWidth - (buttonWidth * 2.0f) - (spacing * 2.0f);
+    const float sliderWidth = (std::max)(1.0f, fullWidth - (buttonWidth * 2.0f) - (spacing * 2.0f));
 
     ImGui::Text("Scroll Mod");
     const float modeWidth = (fullWidth - spacing * 2.0f) / 3.0f;
-    if (config.scrollModMode == ScrollModMode::XMod) {
+    const bool xModSelected = config.scrollModMode == ScrollModMode::XMod;
+    if (xModSelected) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.36f, 0.58f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.42f, 0.66f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f, 0.31f, 0.50f, 1.0f));
@@ -350,11 +368,12 @@ void MenuSystem::renderPlayOptions(GameConfig& config, bool isPlaying) {
     if (ImGui::Button("X", ImVec2(modeWidth, 0.0f))) {
         config.scrollModMode = ScrollModMode::XMod;
     }
-    if (config.scrollModMode == ScrollModMode::XMod) {
+    if (xModSelected) {
         ImGui::PopStyleColor(3);
     }
     ImGui::SameLine();
-    if (config.scrollModMode == ScrollModMode::CMod) {
+    const bool cModSelected = config.scrollModMode == ScrollModMode::CMod;
+    if (cModSelected) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.36f, 0.58f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.42f, 0.66f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f, 0.31f, 0.50f, 1.0f));
@@ -362,11 +381,12 @@ void MenuSystem::renderPlayOptions(GameConfig& config, bool isPlaying) {
     if (ImGui::Button("C", ImVec2(modeWidth, 0.0f))) {
         config.scrollModMode = ScrollModMode::CMod;
     }
-    if (config.scrollModMode == ScrollModMode::CMod) {
+    if (cModSelected) {
         ImGui::PopStyleColor(3);
     }
     ImGui::SameLine();
-    if (config.scrollModMode == ScrollModMode::MMod) {
+    const bool mModSelected = config.scrollModMode == ScrollModMode::MMod;
+    if (mModSelected) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.36f, 0.58f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.42f, 0.66f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f, 0.31f, 0.50f, 1.0f));
@@ -374,7 +394,7 @@ void MenuSystem::renderPlayOptions(GameConfig& config, bool isPlaying) {
     if (ImGui::Button("M", ImVec2(modeWidth, 0.0f))) {
         config.scrollModMode = ScrollModMode::MMod;
     }
-    if (config.scrollModMode == ScrollModMode::MMod) {
+    if (mModSelected) {
         ImGui::PopStyleColor(3);
     }
 
@@ -407,27 +427,29 @@ void MenuSystem::renderPlayOptions(GameConfig& config, bool isPlaying) {
     ImGui::Spacing();
     ImGui::Text("Scroll Direction");
     const float toggleWidth = (fullWidth - spacing) * 0.5f;
-    if (!config.downscroll) {
+    const bool upSelected = config.downscroll;
+    if (upSelected) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.36f, 0.58f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.42f, 0.66f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f, 0.31f, 0.50f, 1.0f));
     }
     if (ImGui::Button("Upscroll", ImVec2(toggleWidth, 0.0f))) {
-        config.downscroll = false;
+        config.downscroll = true;
     }
-    if (!config.downscroll) {
+    if (upSelected) {
         ImGui::PopStyleColor(3);
     }
     ImGui::SameLine();
-    if (config.downscroll) {
+    const bool downSelected = !config.downscroll;
+    if (downSelected) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.36f, 0.58f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.42f, 0.66f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f, 0.31f, 0.50f, 1.0f));
     }
     if (ImGui::Button("Downscroll", ImVec2(toggleWidth, 0.0f))) {
-        config.downscroll = true;
+        config.downscroll = false;
     }
-    if (config.downscroll) {
+    if (downSelected) {
         ImGui::PopStyleColor(3);
     }
 

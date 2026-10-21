@@ -117,7 +117,10 @@ bool runGameSession(SDL_Window* window, SDL_Renderer* sdlRenderer, Renderer& ren
         menu.setLastError(audioError);
         return false;
     }
-
+    if (!audio.setPlaybackRate(liveConfig.rate, audioError)) {
+        menu.setLastError(audioError);
+        return false;
+    }
     if (!audio.start(audioError)) {
         menu.setLastError(audioError);
         return false;
@@ -125,10 +128,16 @@ bool runGameSession(SDL_Window* window, SDL_Renderer* sdlRenderer, Renderer& ren
 
     GameState game;
     game.initialize(session.chart, session.timing, kGlobalOffsetMs);
+    const double durationSeconds = audio.durationSeconds();
 
     bool running = true;
     float appliedRate = liveConfig.rate;
+    double chartTime = 0.0;
+    double previousAudioSeconds = 0.0;
     while (running) {
+        const double audioSecondsAtFrameStart = audio.currentSeconds();
+        const double chartTimeAtFrameStart = chartTime +
+            (audioSecondsAtFrameStart - previousAudioSeconds) * liveConfig.rate;
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             menu.handleEvent(ev);
@@ -151,14 +160,26 @@ bool runGameSession(SDL_Window* window, SDL_Renderer* sdlRenderer, Renderer& ren
                 if (!game.isAutoplay() && audio.isPlaying()) {
                     int column = mapKeyToColumn(ev.key.keysym.sym);
                     if (column >= 0 && column < session.chart.columnCount) {
-                        game.handleColumnPress(column, audio.currentSeconds());
+                        game.handleColumnPress(column, chartTimeAtFrameStart);
                     }
                 }
             } else if (ev.type == SDL_KEYUP) {
                 if (!game.isAutoplay() && audio.isPlaying()) {
                     int column = mapKeyToColumn(ev.key.keysym.sym);
                     if (column >= 0 && column < session.chart.columnCount) {
-                        game.handleColumnRelease(column, audio.currentSeconds());
+                        game.handleColumnRelease(column, chartTimeAtFrameStart);
+                    }
+                }
+            }
+            if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT) {
+                int w = 0, h = 0; SDL_GetWindowSize(window, &w, &h);
+                if (ev.button.y >= h - 42) {
+                    const double target = durationSeconds * std::clamp(static_cast<double>(ev.button.x) / std::max(1, w), 0.0, 1.0);
+                    if (audio.seekSeconds(target)) {
+                        const bool autoplay = game.isAutoplay();
+                        game.initialize(session.chart, session.timing, kGlobalOffsetMs);
+                        game.setAutoplay(autoplay);
+                        chartTime = target; previousAudioSeconds = audio.currentSeconds();
                     }
                 }
             }
@@ -173,7 +194,10 @@ bool runGameSession(SDL_Window* window, SDL_Renderer* sdlRenderer, Renderer& ren
             }
         }
 
-        const double nowSec = audio.currentSeconds();
+        const double audioSeconds = audio.currentSeconds();
+        chartTime += (audioSeconds - previousAudioSeconds) * liveConfig.rate;
+        previousAudioSeconds = audioSeconds;
+        const double nowSec = chartTime;
         game.update(nowSec);
 
         int width = 960;
@@ -183,8 +207,9 @@ bool runGameSession(SDL_Window* window, SDL_Renderer* sdlRenderer, Renderer& ren
         SDL_SetRenderDrawColor(sdlRenderer, 8, 10, 18, 255);
         SDL_RenderClear(sdlRenderer);
 
-        renderer.draw(game, session.timing, nowSec, session.chart.columnCount, width, height,
-                      kGlobalOffsetMs, liveConfig.scrollModMode, liveConfig.scrollSpeed, liveConfig.downscroll);
+        renderer.draw(game, session.timing, chartTime, session.chart.columnCount, width, height,
+                      kGlobalOffsetMs, liveConfig.scrollModMode, liveConfig.scrollSpeed,
+                      liveConfig.rate, liveConfig.downscroll, durationSeconds);
 
         bool togglePlayback = false;
         bool requestExit = false;

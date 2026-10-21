@@ -77,6 +77,12 @@ std::vector<NoteInfo> buildNoteInfo(const ParsedSong& song, const ParsedChart& c
 }
 
 std::optional<float> calculateChartMsd(const ParsedSong& song, const ParsedChart& chart) {
+    const auto values = calculateChartSkillsets(song, chart);
+    if (!values) return std::nullopt;
+    return (*values)[Skill_Overall];
+}
+
+std::optional<std::array<float, 8>> calculateChartSkillsets(const ParsedSong& song, const ParsedChart& chart) {
     if (chart.columnCount != 4) {
         return std::nullopt;
     }
@@ -92,10 +98,12 @@ std::optional<float> calculateChartMsd(const ParsedSong& song, const ParsedChart
         return std::nullopt;
     }
 
-    const float overall = skillsets[Skill_Overall];
-    if (!std::isfinite(overall)) {
-        return std::nullopt;
+    std::array<float, 8> result{};
+    for (size_t i = 0; i < result.size(); ++i) {
+        result[i] = skillsets[i];
+        if (!std::isfinite(result[i])) {
+            return std::nullopt;
+        }
     }
-
-    return overall;
+    return result;
 }

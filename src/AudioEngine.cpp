@@ -43,13 +43,13 @@ bool AudioEngine::load(const std::filesystem::path& audioFile, std::string& erro
         return false;
     }
     sourceSampleRate_ = decoderProbe.outputSampleRate;
+    ma_uint64 probedFrames = 0;
+    ma_data_source_get_length_in_pcm_frames(&decoderProbe, &probedFrames);
+    totalFrames_ = probedFrames;
     ma_decoder_uninit(&decoderProbe);
 
-    const float requestedRate = playbackRate_.load();
-    const ma_uint32 outputSampleRate = sourceSampleRate_ == 0
-        ? 48000
-        : static_cast<ma_uint32>(std::max(1.0, std::round(static_cast<double>(sourceSampleRate_) * requestedRate)));
-    ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_unknown, 0, outputSampleRate);
+    const ma_uint32 nativeSampleRate = sourceSampleRate_ == 0 ? 48000 : sourceSampleRate_;
+    ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_unknown, 0, nativeSampleRate);
     res = ma_decoder_init_file(audioFile.string().c_str(), &decoderConfig, &decoder_);
     if (res != MA_SUCCESS) {
         error = "Failed to decode audio file (error " + std::to_string(res) + "): " + audioFile.string();
@@ -60,7 +60,8 @@ bool AudioEngine::load(const std::filesystem::path& audioFile, std::string& erro
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
     config.playback.format = decoder_.outputFormat;
     config.playback.channels = decoder_.outputChannels;
-    config.sampleRate = decoder_.outputSampleRate;
+    // Keep the device clock native; the decoder output rate controls speed.
+    config.sampleRate = sourceSampleRate_ == 0 ? 48000 : sourceSampleRate_;
     config.dataCallback = &AudioEngine::dataCallback;
     config.pUserData = this;
 
@@ -77,6 +78,19 @@ bool AudioEngine::load(const std::filesystem::path& audioFile, std::string& erro
     sampleRate_.store(config.sampleRate > 0 ? config.sampleRate : 48000);
 
     return true;
+}
+
+bool AudioEngine::seekSeconds(double seconds) {
+    if (!decoderInitialized_ || !deviceInitialized_) return false;
+    const double duration = durationSeconds();
+    seconds = std::max(0.0, std::min(seconds, duration));
+    const ma_uint64 frame = static_cast<ma_uint64>(seconds * sampleRate_.load());
+    const bool wasPlaying = isPlaying();
+    if (wasPlaying) ma_device_stop(&device_);
+    const bool ok = ma_decoder_seek_to_pcm_frame(&decoder_, frame) == MA_SUCCESS;
+    if (ok) framesPlayed_.store(frame);
+    if (wasPlaying) ma_device_start(&device_);
+    return ok;
 }
 
 bool AudioEngine::start(std::string& error) {
@@ -127,7 +141,9 @@ bool AudioEngine::setPlaybackRate(float rate, std::string& error) {
     }
 
     const ma_uint32 baseRate = sourceSampleRate_ == 0 ? sampleRate_.load() : sourceSampleRate_;
-    const ma_uint32 outputRate = static_cast<ma_uint32>(std::max(1.0, std::round(static_cast<double>(baseRate) * rate)));
+    // miniaudio's converter ratio is input/output, so the output sample rate
+    // is inversely proportional to the desired playback-speed multiplier.
+    const ma_uint32 outputRate = static_cast<ma_uint32>(std::max(1.0, std::round(static_cast<double>(baseRate) / rate)));
     ma_result res = ma_data_converter_set_rate(&decoder_.converter, baseRate, outputRate);
     if (res != MA_SUCCESS) {
         error = "Failed to update playback rate.";
@@ -135,7 +151,7 @@ bool AudioEngine::setPlaybackRate(float rate, std::string& error) {
     }
 
     decoder_.outputSampleRate = outputRate;
-    sampleRate_.store(outputRate);
+    // currentSeconds() is based on the device clock, not the resampled output.
     return true;
 }
 
@@ -158,6 +174,11 @@ bool AudioEngine::isPlaying() const {
 
 float AudioEngine::playbackRate() const {
     return playbackRate_.load();
+}
+
+double AudioEngine::durationSeconds() const {
+    const uint32_t sr = sampleRate_.load();
+    return sr == 0 ? 0.0 : static_cast<double>(totalFrames_) / sr;
 }
 
 void AudioEngine::dataCallback(ma_device* device, void* output, const void* input, ma_uint32 frameCount) {

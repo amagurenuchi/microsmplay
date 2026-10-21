@@ -62969,7 +62969,7 @@ static ma_result ma_decoder__init_data_converter(ma_decoder* pDecoder, const ma_
     converterConfig.pChannelMapOut         = pConfig->pChannelMap;
     converterConfig.channelMixMode         = pConfig->channelMixMode;
     converterConfig.ditherMode             = pConfig->ditherMode;
-    converterConfig.allowDynamicSampleRate = MA_FALSE;   /* Never allow dynamic sample rate conversion. Setting this to true will disable passthrough optimizations. */
+    converterConfig.allowDynamicSampleRate = MA_TRUE;    /* Playback rate is changed dynamically by AudioEngine. */
     converterConfig.resampling             = pConfig->resampling;
 
     result = ma_data_converter_init(&converterConfig, &pDecoder->allocationCallbacks, &pDecoder->converter);
